@@ -43,17 +43,20 @@ case $STEP in
     cat toolchains.xml
     # Build
     export JAVA_HOME=${JAVA17_HOME}
-    $MVN -T 1C install -DskipTests -Pdsv1_2.12,dsv1_2.13,dsv2_3.1,dsv2_3.2,dsv2_3.3,dsv2_3.4,dsv2_3.5,dsv2_4.0,dsv2_4.1
+    $MVN -T 1C install -DskipTests -Pdsv1_2.12,dsv1_2.13,dsv2_3.1,dsv2_3.2,dsv2_3.3,dsv2_3.4,dsv2_3.5,dsv2_4.0,dsv2_4.1,dsv2_4.2
     #coverage report
     export JAVA_HOME=${JAVA17_HOME}
-    $MVN -T 1C test jacoco:report jacoco:report-aggregate -Pcoverage,dsv1_2.12,dsv1_2.13,dsv2_3.1,dsv2_3.2,dsv2_3.3,dsv2_3.4,dsv2_3.5,dsv2_4.0,dsv2_4.1
-    # Run integration tests
+    $MVN -T 1C test jacoco:report jacoco:report-aggregate -Pcoverage,dsv1_2.12,dsv1_2.13,dsv2_3.1,dsv2_3.2,dsv2_3.3,dsv2_3.4,dsv2_3.5,dsv2_4.0,dsv2_4.1,dsv2_4.2
+    # Run integration tests. They hit the live BigQuery API and occasionally fail on transient
+    # backend errors, so rerun failing tests up to 2 times; tests that pass on rerun are
+    # reported as "flaky" in the failsafe summary instead of failing the build.
     unset MAVEN_OPTS
     export JAVA_HOME=${JAVA17_HOME}
-    $MVN failsafe:integration-test failsafe:verify jacoco:report jacoco:report-aggregate -Pcoverage,integration,dsv1_2.12,dsv1_2.13,dsv2_3.1,dsv2_3.2,dsv2_3.3,dsv2_3.4,dsv2_3.5,dsv2_4.0,dsv2_4.1
-    # Run acceptance tests
+    $MVN -Dfailsafe.rerunFailingTestsCount=2 failsafe:integration-test failsafe:verify jacoco:report jacoco:report-aggregate -Pcoverage,integration,dsv1_2.12,dsv1_2.13,dsv2_3.1,dsv2_3.2,dsv2_3.3,dsv2_3.4,dsv2_3.5,dsv2_4.0,dsv2_4.1,dsv2_4.2
+    # Run acceptance tests. Same transient-error reruns as integration tests. Note that a rerun
+    # of a Dataproc cluster test re-runs its @BeforeClass, i.e. creates a fresh cluster.
     export JAVA_HOME=${JAVA17_HOME}
-    $MVN failsafe:integration-test failsafe:verify jacoco:report jacoco:report-aggregate -Pcoverage,acceptance,dsv1_2.12,dsv1_2.13,dsv2_3.1,dsv2_3.2,dsv2_3.3,dsv2_3.4,dsv2_3.5,dsv2_4.0,dsv2_4.1
+    $MVN -Dfailsafe.rerunFailingTestsCount=2 failsafe:integration-test failsafe:verify jacoco:report jacoco:report-aggregate -Pcoverage,acceptance,dsv1_2.12,dsv1_2.13,dsv2_3.1,dsv2_3.2,dsv2_3.3,dsv2_3.4,dsv2_3.5,dsv2_4.0,dsv2_4.1,dsv2_4.2
     # Upload test coverage report to Codecov
     bash <(curl -s https://codecov.io/bash) -K -F "nightly"
 
@@ -88,11 +91,14 @@ case $STEP in
     gcloud storage cp "${M2REPO}/com/google/cloud/spark/spark-3.5-bigquery/${BUILD_REVISION}/spark-3.5-bigquery-${BUILD_REVISION}.jar" "gs://${BUCKET}"
     gcloud storage cp "gs://${BUCKET}/spark-3.5-bigquery-${BUILD_REVISION}.jar" "gs://${BUCKET}/spark-3.5-bigquery-nightly-snapshot.jar"
 
-    gcloud storage cp "${M2REPO}/com/google/cloud/spark/spark-4.0-bigquery/${BUILD_REVISION}-preview/spark-4.0-bigquery-${BUILD_REVISION}-preview.jar" "gs://${BUCKET}"
-    gcloud storage cp "gs://${BUCKET}/spark-4.0-bigquery-${BUILD_REVISION}-preview.jar" "gs://${BUCKET}/spark-4.0-bigquery-nightly-snapshot.jar"
+    gcloud storage cp "${M2REPO}/com/google/cloud/spark/spark-4.0-bigquery/${BUILD_REVISION}/spark-4.0-bigquery-${BUILD_REVISION}.jar" "gs://${BUCKET}"
+    gcloud storage cp "gs://${BUCKET}/spark-4.0-bigquery-${BUILD_REVISION}.jar" "gs://${BUCKET}/spark-4.0-bigquery-nightly-snapshot.jar"
 
-    gcloud storage cp "${M2REPO}/com/google/cloud/spark/spark-4.1-bigquery/${BUILD_REVISION}-preview/spark-4.1-bigquery-${BUILD_REVISION}-preview.jar" "gs://${BUCKET}"
-    gcloud storage cp "gs://${BUCKET}/spark-4.1-bigquery-${BUILD_REVISION}-preview.jar" "gs://${BUCKET}/spark-4.1-bigquery-nightly-snapshot.jar"
+    gcloud storage cp "${M2REPO}/com/google/cloud/spark/spark-4.1-bigquery/${BUILD_REVISION}/spark-4.1-bigquery-${BUILD_REVISION}.jar" "gs://${BUCKET}"
+    gcloud storage cp "gs://${BUCKET}/spark-4.1-bigquery-${BUILD_REVISION}.jar" "gs://${BUCKET}/spark-4.1-bigquery-nightly-snapshot.jar"
+
+    gcloud storage cp "${M2REPO}/com/google/cloud/spark/spark-4.2-bigquery/${BUILD_REVISION}/spark-4.2-bigquery-${BUILD_REVISION}.jar" "gs://${BUCKET}"
+    gcloud storage cp "gs://${BUCKET}/spark-4.2-bigquery-${BUILD_REVISION}.jar" "gs://${BUCKET}/spark-4.2-bigquery-nightly-snapshot.jar"
 
     gcloud storage cp "${M2REPO}/com/google/cloud/spark/spark-bigquery-metrics/${BUILD_REVISION}/spark-bigquery-metrics-${BUILD_REVISION}.jar" "gs://${BUCKET}"
     gcloud storage cp "gs://${BUCKET}/spark-bigquery-metrics-${BUILD_REVISION}.jar" "gs://${BUCKET}/spark-bigquery-metrics-nightly-snapshot.jar"
@@ -102,7 +108,7 @@ case $STEP in
 
   deploy)
     # TODO: Re-enable deployment for nightly builds.
-    # $MVN deploy:deploy -DskipTests -Dscala.skipTests=true -Prelease-nightly,dsv1_2.12,dsv1_2.13,dsv2_3.1,dsv2_3.2,dsv2_3.3,dsv2_3.4,dsv2_3.5,dsv2_4.0,dsv2_4.1
+    # $MVN deploy:deploy -DskipTests -Dscala.skipTests=true -Prelease-nightly,dsv1_2.12,dsv1_2.13,dsv2_3.1,dsv2_3.2,dsv2_3.3,dsv2_3.4,dsv2_3.5,dsv2_4.0,dsv2_4.1,dsv2_4.2
     exit
     ;;
 
@@ -111,3 +117,4 @@ case $STEP in
     exit 1
     ;;
 esac
+

@@ -43,6 +43,7 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TableResult;
 import com.google.cloud.bigquery.TimePartitioning;
+import com.google.cloud.bigquery.storage.v1.Exceptions.AppendSerializationError;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
 import com.google.cloud.bigquery.storage.v1.ReadStream;
 import com.google.common.annotations.VisibleForTesting;
@@ -54,6 +55,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import io.grpc.Status;
 import io.grpc.Status.Code;
+import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -71,6 +73,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.regex.Matcher;
@@ -86,6 +89,8 @@ public class BigQueryUtil {
   public static final int DEFAULT_NUMERIC_SCALE = 9;
   public static final int DEFAULT_BIG_NUMERIC_PRECISION = 76;
   public static final int DEFAULT_BIG_NUMERIC_SCALE = 38;
+  public static final ImmutableSet<String> CDC_PSEUDO_COLUMNS =
+      ImmutableSet.of("_CHANGE_TYPE", "_CHANGE_SEQUENCE_NUMBER");
   private static final int NO_VALUE = -1;
   private static final long BIGQUERY_INTEGER_MIN_VALUE = Long.MIN_VALUE;
   static final ImmutableSet<String> INTERNAL_ERROR_MESSAGES =
@@ -96,8 +101,23 @@ public class BigQueryUtil {
 
   static final String READ_SESSION_EXPIRED_ERROR_MESSAGE = "session expired at";
 
-  private static final String PROJECT_PATTERN = "\\S+";
+  private static final int MAX_APPEND_ROW_ERRORS_IN_MESSAGE = 100;
+  // Java serialization uses modified UTF-8 for strings; this also bounds standard UTF-8 logs.
+  private static final int MAX_APPEND_ROW_ERRORS_SECTION_BYTES = 64 * 1024;
+  private static final String APPEND_ROW_ERRORS_PREFIX = "row errors (append request indexes): ";
+  private static final String ROW_ERROR_TEXT_TRUNCATED_SUFFIX = " [row error text truncated]";
+
+  private static final String TARGET_ALIAS =
+      "__target_" + UUID.randomUUID().toString().replace("-", "");
+  private static final String SOURCE_ALIAS =
+      "__source_" + UUID.randomUUID().toString().replace("-", "");
+
+  private static final String PROJECT_ID_PATTERN = "[^\\s.:]+";
+  private static final String DOMAIN_SCOPED_PROJECT_PATTERN = "[^\\s:]+:[^\\s.:]+";
+  private static final String PROJECT_PATTERN =
+      format("(?:%s|%s)", DOMAIN_SCOPED_PROJECT_PATTERN, PROJECT_ID_PATTERN);
   private static final String DATASET_PATTERN = "\\w+";
+  private static final String LAKEHOUSE_COMPONENT_PATTERN = "[\\w-]+";
   // Allow any character except ':' and '.', which are used as delimiters in qualified names.
   // These confuse the qualified table parsing.
   private static final String TABLE_PATTERN = "[^.:]+";
@@ -108,12 +128,34 @@ public class BigQueryUtil {
   /**
    * Regex for an optionally fully qualified table.
    *
-   * <p>Must match 'project.dataset.table' OR the legacy 'project:dataset.table' OR 'dataset.table'
-   * OR 'table'.
+   * <p>Matches {@code project.dataset.table}, the legacy {@code project:dataset.table}, {@code
+   * dataset.table}, or {@code table}. The project may be domain-scoped, for example {@code
+   * example.com:project.dataset.table}.
    */
   private static final Pattern QUALIFIED_TABLE_REGEX =
       Pattern.compile(
-          format("^(((%s)[:.])?(%s)\\.)?(%s)$$", PROJECT_PATTERN, DATASET_PATTERN, TABLE_PATTERN));
+          format(
+              "^(?:(?:(?<project>%s)[:.])?(?<dataset>%s)\\.)?(?<table>%s)$$",
+              PROJECT_PATTERN, DATASET_PATTERN, TABLE_PATTERN));
+
+  /**
+   * Regex for a fully qualified Iceberg REST catalog table in project-catalog-namespace-table
+   * (PCNT) notation.
+   *
+   * <p>Both {@code project.catalog.namespace.table} and the legacy {@code
+   * project:catalog.namespace.table} separators are supported. A domain-scoped project can use
+   * either separator after the project, for example {@code
+   * example.com:project.catalog.namespace.table} or {@code
+   * example.com:project:catalog.namespace.table}.
+   */
+  private static final Pattern PROJECT_CATALOG_NAMESPACE_TABLE_REGEX =
+      Pattern.compile(
+          format(
+              "^(?<project>%s)[:.](?<catalog>%s)\\.(?<namespace>%s)\\.(?<table>%s)$$",
+              PROJECT_PATTERN,
+              LAKEHOUSE_COMPONENT_PATTERN,
+              LAKEHOUSE_COMPONENT_PATTERN,
+              TABLE_PATTERN));
 
   // Based on
   // https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#google.cloud.bigquery.storage.v1.ReadSession.TableReadOptions
@@ -146,6 +188,160 @@ public class BigQueryUtil {
           && statusRuntimeException.getMessage().contains(READ_SESSION_EXPIRED_ERROR_MESSAGE);
     }
     return false;
+  }
+
+  public static Throwable makeSerializable(Throwable t) {
+    if (t == null) {
+      return null;
+    }
+
+    return getCausalChain(t).stream()
+        .filter(BigQueryUtil::isGrpcStatusException)
+        .findFirst()
+        .map(BigQueryUtil::createSerializableGrpcStatusException)
+        .map(Throwable.class::cast)
+        .orElse(t);
+  }
+
+  private static boolean isGrpcStatusException(Throwable t) {
+    return t instanceof StatusRuntimeException || t instanceof StatusException;
+  }
+
+  private static SerializableGrpcStatusException createSerializableGrpcStatusException(
+      Throwable grpcException) {
+    String message = grpcException.getMessage();
+    if (grpcException instanceof AppendSerializationError) {
+      AppendSerializationError appendSerializationError = (AppendSerializationError) grpcException;
+      Map<Integer, String> rowErrors = appendSerializationError.getRowIndexToErrorMessage();
+      message =
+          format(
+              "%s; write stream: %s; %s",
+              message, appendSerializationError.getStreamName(), formatAppendRowErrors(rowErrors));
+    }
+    Status status;
+    if (grpcException instanceof StatusException) {
+      status = ((StatusException) grpcException).getStatus();
+    } else if (grpcException instanceof StatusRuntimeException) {
+      status = ((StatusRuntimeException) grpcException).getStatus();
+    } else {
+      throw new IllegalArgumentException(
+          "Should be gRPC StatusException or StatusRuntimeException", grpcException);
+    }
+
+    String causeMessage =
+        grpcException.getCause() != null ? grpcException.getCause().toString() : null;
+
+    SerializableGrpcStatusException serializable =
+        new SerializableGrpcStatusException(
+            message, status.getCode(), status.getDescription(), causeMessage);
+
+    serializable.setStackTrace(grpcException.getStackTrace());
+
+    return serializable;
+  }
+
+  private static String formatAppendRowErrors(@Nullable Map<Integer, String> rowErrors) {
+    if (rowErrors == null || rowErrors.isEmpty()) {
+      return APPEND_ROW_ERRORS_PREFIX + "{}";
+    }
+
+    TreeMap<Integer, String> lowestRowErrors = new TreeMap<>();
+    int totalRowErrorCount = 0;
+    for (Map.Entry<Integer, String> rowError : rowErrors.entrySet()) {
+      totalRowErrorCount++;
+      lowestRowErrors.put(rowError.getKey(), rowError.getValue());
+      if (lowestRowErrors.size() > MAX_APPEND_ROW_ERRORS_IN_MESSAGE) {
+        lowestRowErrors.pollLastEntry();
+      }
+    }
+
+    String maximumSuffix =
+        ROW_ERROR_TEXT_TRUNCATED_SUFFIX
+            + formatAdditionalRowErrorsOmittedSuffix(totalRowErrorCount);
+    int entriesByteLimit =
+        MAX_APPEND_ROW_ERRORS_SECTION_BYTES - modifiedUtf8Length(maximumSuffix) - 1;
+    StringBuilder formattedRowErrors = new StringBuilder(APPEND_ROW_ERRORS_PREFIX).append('{');
+    int formattedByteCount = modifiedUtf8Length(APPEND_ROW_ERRORS_PREFIX) + 1;
+    int formattedRowErrorCount = 0;
+    boolean rowErrorTextTruncated = false;
+
+    for (Map.Entry<Integer, String> rowError : lowestRowErrors.entrySet()) {
+      String separator = formattedRowErrorCount == 0 ? "" : ", ";
+      String rowErrorPrefix = separator + rowError.getKey() + "=";
+      int rowErrorPrefixByteCount = modifiedUtf8Length(rowErrorPrefix);
+      int remainingValueBytes = entriesByteLimit - formattedByteCount - rowErrorPrefixByteCount;
+      if (remainingValueBytes < 0) {
+        break;
+      }
+
+      formattedRowErrors.append(rowErrorPrefix);
+      formattedByteCount += rowErrorPrefixByteCount;
+      String rowErrorMessage = String.valueOf(rowError.getValue());
+      int originalLength = formattedRowErrors.length();
+      formattedByteCount +=
+          appendModifiedUtf8Prefix(formattedRowErrors, rowErrorMessage, remainingValueBytes);
+      formattedRowErrorCount++;
+      if (formattedRowErrors.length() - originalLength < rowErrorMessage.length()) {
+        rowErrorTextTruncated = true;
+        break;
+      }
+    }
+
+    formattedRowErrors.append('}');
+    if (rowErrorTextTruncated) {
+      formattedRowErrors.append(ROW_ERROR_TEXT_TRUNCATED_SUFFIX);
+    }
+    formattedRowErrors.append(
+        formatAdditionalRowErrorsOmittedSuffix(totalRowErrorCount - formattedRowErrorCount));
+    return formattedRowErrors.toString();
+  }
+
+  private static String formatAdditionalRowErrorsOmittedSuffix(int count) {
+    if (count == 0) {
+      return "";
+    }
+    return format(" [%d additional row error%s omitted]", count, count == 1 ? "" : "s");
+  }
+
+  private static int appendModifiedUtf8Prefix(
+      StringBuilder target, String value, int maximumBytes) {
+    int byteCount = 0;
+    int characterCount = 0;
+    while (characterCount < value.length()) {
+      char current = value.charAt(characterCount);
+      int currentCharacterCount =
+          Character.isHighSurrogate(current)
+                  && characterCount + 1 < value.length()
+                  && Character.isLowSurrogate(value.charAt(characterCount + 1))
+              ? 2
+              : 1;
+      int currentByteCount = modifiedUtf8Length(current);
+      if (currentCharacterCount == 2) {
+        currentByteCount += modifiedUtf8Length(value.charAt(characterCount + 1));
+      }
+      if (byteCount + currentByteCount > maximumBytes) {
+        break;
+      }
+      byteCount += currentByteCount;
+      characterCount += currentCharacterCount;
+    }
+    target.append(value, 0, characterCount);
+    return byteCount;
+  }
+
+  private static int modifiedUtf8Length(String value) {
+    int byteCount = 0;
+    for (int index = 0; index < value.length(); index++) {
+      byteCount += modifiedUtf8Length(value.charAt(index));
+    }
+    return byteCount;
+  }
+
+  private static int modifiedUtf8Length(char value) {
+    if (value >= 0x0001 && value <= 0x007f) {
+      return 1;
+    }
+    return value <= 0x07ff ? 2 : 3;
   }
 
   static BigQueryException convertToBigQueryException(BigQueryError error) {
@@ -217,14 +413,28 @@ public class BigQueryUtil {
       effectiveTable = effectiveTable.substring(1, effectiveTable.length() - 1);
     }
 
-    Matcher matcher = QUALIFIED_TABLE_REGEX.matcher(effectiveTable);
-    if (!matcher.matches()) {
-      throw new IllegalArgumentException(
-          format("Invalid Table ID '%s'. Must match '%s'", rawTable, QUALIFIED_TABLE_REGEX));
+    Matcher pcntMatcher = PROJECT_CATALOG_NAMESPACE_TABLE_REGEX.matcher(effectiveTable);
+    String table;
+    Optional<String> parsedDataset;
+    Optional<String> parsedProject;
+    if (pcntMatcher.matches()) {
+      parsedProject = Optional.of(pcntMatcher.group("project"));
+      parsedDataset =
+          Optional.of(pcntMatcher.group("catalog") + "." + pcntMatcher.group("namespace"));
+      table = pcntMatcher.group("table");
+    } else {
+      Matcher qualifiedTableMatcher = QUALIFIED_TABLE_REGEX.matcher(effectiveTable);
+      if (!qualifiedTableMatcher.matches()) {
+        throw new IllegalArgumentException(
+            format(
+                "Invalid Table ID '%s'. Must match '%s' or '%s'",
+                rawTable, QUALIFIED_TABLE_REGEX, PROJECT_CATALOG_NAMESPACE_TABLE_REGEX));
+      }
+      parsedProject = Optional.ofNullable(qualifiedTableMatcher.group("project"));
+      parsedDataset = Optional.ofNullable(qualifiedTableMatcher.group("dataset"));
+      table = qualifiedTableMatcher.group("table");
     }
-    String table = matcher.group(5);
-    Optional<String> parsedDataset = Optional.ofNullable(matcher.group(4));
-    Optional<String> parsedProject = Optional.ofNullable(matcher.group(3));
+
     String tableAndPartition =
         datePartition.map(date -> String.format("%s$%s", table, date)).orElse(table);
     String actualDataset =
@@ -767,7 +977,8 @@ public class BigQueryUtil {
         String.format("%s(`%s`, %s)", truncFuntion, partitionField, partitionType.toString());
     String extractedPartitionedTarget =
         String.format(
-            "%s(`target`.`%s`, %s)", truncFuntion, partitionField, partitionType.toString());
+            "%s(`%s`.`%s`, %s)",
+            truncFuntion, TARGET_ALIAS, partitionField, partitionType.toString());
 
     return createOptimizedMergeQuery(
         destinationDefinition,
@@ -788,12 +999,19 @@ public class BigQueryUtil {
     FieldList allFields = destinationDefinition.getSchema().getFields();
     String commaSeparatedFields =
         allFields.stream().map(Field::getName).collect(Collectors.joining("`,`", "`", "`"));
+    String targetAlias = TARGET_ALIAS;
+    String sourceAlias = SOURCE_ALIAS;
+    String commaSeparatedSourceFields =
+        allFields.stream()
+            .map(Field::getName)
+            .map(name -> String.format("`%s`.`%s`", sourceAlias, name))
+            .collect(Collectors.joining(","));
 
     String queryFormat =
         "DECLARE partitions_to_delete DEFAULT "
             + "(SELECT ARRAY_AGG(DISTINCT(%s) IGNORE NULLS) FROM `%s`); \n"
-            + "MERGE `%s` AS target\n"
-            + "USING `%s` AS source\n"
+            + "MERGE `%s` AS `%s`\n"
+            + "USING `%s` AS `%s`\n"
             + "ON FALSE\n"
             + "WHEN NOT MATCHED BY SOURCE AND (%s) AND %s IN UNNEST(partitions_to_delete) THEN DELETE\n"
             + "WHEN NOT MATCHED BY TARGET THEN\n"
@@ -803,11 +1021,13 @@ public class BigQueryUtil {
         extractedPartitionedSource,
         temporaryTableName,
         destinationTableName,
+        targetAlias,
         temporaryTableName,
+        sourceAlias,
         partitionMatchAdditionalCondition,
         extractedPartitionedTarget,
         commaSeparatedFields,
-        commaSeparatedFields);
+        commaSeparatedSourceFields);
   }
 
   static String getQueryForRangePartitionedTable(
@@ -828,13 +1048,14 @@ public class BigQueryUtil {
             partitionField, end, partitionField, start, end, interval);
     String extractedPartitionedTarget =
         String.format(
-            "IFNULL(IF(target.%s >= %s, 0, RANGE_BUCKET(target.%s, GENERATE_ARRAY(%s, %s, %s))), -1)",
-            partitionField, end, partitionField, start, end, interval);
+            "IFNULL(IF(`%s`.`%s` >= %s, 0, RANGE_BUCKET(`%s`.`%s`, GENERATE_ARRAY(%s, %s, %s))), -1)",
+            TARGET_ALIAS, partitionField, end, TARGET_ALIAS, partitionField, start, end, interval);
     // needed for tables that require the partition field to be in the where clause. It must be
     // true.
     String partitionMatchAdditionalCondition =
         String.format(
-            "target.%s is NULL OR target.%s >= %d", partitionField, partitionField, Long.MIN_VALUE);
+            "`%s`.`%s` is NULL OR `%s`.`%s` >= %d",
+            TARGET_ALIAS, partitionField, TARGET_ALIAS, partitionField, Long.MIN_VALUE);
 
     return createOptimizedMergeQuery(
         destinationDefinition,
@@ -1117,5 +1338,9 @@ public class BigQueryUtil {
       return "NULL";
     }
     return String.valueOf(fieldValue.getValue());
+  }
+
+  public static boolean isCdcPseudoColumn(Field field) {
+    return BigQueryUtil.CDC_PSEUDO_COLUMNS.contains(field.getName().toUpperCase(Locale.ENGLISH));
   }
 }

@@ -47,19 +47,30 @@ import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TableResult;
 import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.ViewDefinition;
+import com.google.cloud.bigquery.storage.v1.Exceptions.AppendSerializationError;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
 import com.google.cloud.bigquery.storage.v1.ReadSession.TableReadOptions;
 import com.google.cloud.bigquery.storage.v1.ReadStream;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectOutputStream;
+import java.io.ObjectStreamConstants;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Random;
+import java.util.concurrent.ExecutionException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.Test;
@@ -70,6 +81,24 @@ public class BigQueryUtilTest {
       TableId.of("test.org:test-project", "test_dataset", "test_table");
   private static final String FULLY_QUALIFIED_TABLE =
       "test.org:test-project.test_dataset.test_table";
+
+  private static int serializedStringPayloadSize(String value) throws IOException {
+    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    try (ObjectOutputStream output = new ObjectOutputStream(bytes)) {
+      output.writeObject(value);
+    }
+    byte[] serialized = bytes.toByteArray();
+    byte typeCode = serialized[2 * Short.BYTES];
+    int lengthBytes;
+    if (typeCode == ObjectStreamConstants.TC_STRING) {
+      lengthBytes = Short.BYTES;
+    } else if (typeCode == ObjectStreamConstants.TC_LONGSTRING) {
+      lengthBytes = Long.BYTES;
+    } else {
+      throw new AssertionError("Expected a serialized String type code");
+    }
+    return serialized.length - (2 * Short.BYTES) - 1 - lengthBytes;
+  }
 
   private static void checkFailureMessage(ComparisonResult result, String message) {
     assertThat(result.valuesAreEqual()).isFalse();
@@ -84,8 +113,8 @@ public class BigQueryUtilTest {
 
   @Test
   public void testParseFullyQualifiedLegacyTable() {
-    TableId tableId = BigQueryUtil.parseTableId("test.org:test-project.test_dataset.test_table");
-    assertThat(tableId).isEqualTo(TABLE_ID);
+    TableId tableId = BigQueryUtil.parseTableId("test-project:test_dataset.test_table");
+    assertThat(tableId).isEqualTo(TableId.of("test-project", "test_dataset", "test_table"));
   }
 
   @Test
@@ -180,6 +209,65 @@ public class BigQueryUtilTest {
   @Test
   public void testUnparsableTable() {
     assertThrows(IllegalArgumentException.class, () -> BigQueryUtil.parseTableId("foo:bar:baz"));
+  }
+
+  @Test
+  public void testProjectCatalogNamespaceTableNotation_four_part() {
+    TableId tableId =
+        BigQueryUtil.parseTableId(
+            "project.catalog.namespace.table", Optional.empty(), Optional.empty());
+    assertThat(tableId).isEqualTo(TableId.of("project", "catalog.namespace", "table"));
+  }
+
+  @Test
+  public void testProjectCatalogNamespaceTableNotation_legacyColon() {
+    TableId tableId = BigQueryUtil.parseTableId("project:catalog.namespace.table");
+    assertThat(tableId).isEqualTo(TableId.of("project", "catalog.namespace", "table"));
+  }
+
+  @Test
+  public void testProjectCatalogNamespaceTableNotation_hyphenatedIdentifiers() {
+    TableId tableId = BigQueryUtil.parseTableId("my-project.my-catalog.my-namespace.my-table");
+    assertThat(tableId).isEqualTo(TableId.of("my-project", "my-catalog.my-namespace", "my-table"));
+  }
+
+  @Test
+  public void testProjectCatalogNamespaceTableNotation_independent() {
+    TableId tableId =
+        BigQueryUtil.parseTableId(
+            "table", Optional.of("catalog.namespace"), Optional.of("project"));
+    assertThat(tableId).isEqualTo(TableId.of("project", "catalog.namespace", "table"));
+  }
+
+  @Test
+  public void testProjectCatalogNamespaceTableNotation_with_org() {
+    TableId tableId =
+        BigQueryUtil.parseTableId("test.org:test-project.test_catalog.test_dataset.test_table");
+    assertThat(tableId)
+        .isEqualTo(TableId.of("test.org:test-project", "test_catalog.test_dataset", "test_table"));
+  }
+
+  @Test
+  public void testProjectCatalogNamespaceTableNotation_with_org_and_catalog() {
+    TableId tableId = BigQueryUtil.parseTableId("test.org:test-project.catalog.namespace.table");
+    assertThat(tableId)
+        .isEqualTo(TableId.of("test.org:test-project", "catalog.namespace", "table"));
+  }
+
+  @Test
+  public void testProjectCatalogNamespaceTableNotation_with_org_and_legacyColon() {
+    TableId tableId = BigQueryUtil.parseTableId("test.org:test-project:catalog.namespace.table");
+    assertThat(tableId)
+        .isEqualTo(TableId.of("test.org:test-project", "catalog.namespace", "table"));
+  }
+
+  @Test
+  public void testProjectCatalogNamespaceTableNotation_illegal_nested_catalogs_failure() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            BigQueryUtil.parseTableId(
+                "project.catalog.nested.namespace.table", Optional.empty(), Optional.empty()));
   }
 
   @Test
@@ -1454,5 +1542,219 @@ public class BigQueryUtilTest {
     };
 
     assertThat(actual).isEqualTo(expected);
+  }
+
+  @Test
+  public void testGetQueryForTimePartitionedTable() {
+    Schema schema =
+        Schema.of(
+            Field.newBuilder("id", StandardSQLTypeName.INT64).build(),
+            Field.newBuilder("source", StandardSQLTypeName.STRING).build());
+    StandardTableDefinition destinationDefinition =
+        StandardTableDefinition.newBuilder().setSchema(schema).build();
+    TimePartitioning timePartitioning =
+        TimePartitioning.newBuilder(TimePartitioning.Type.DAY).setField("id").build();
+
+    String query =
+        BigQueryUtil.getQueryForTimePartitionedTable(
+            "dest_table", "temp_table", destinationDefinition, timePartitioning);
+
+    Matcher targetMatcher =
+        Pattern.compile("MERGE `dest_table` AS `(__target_[a-f0-9]{32})`").matcher(query);
+    assertThat(targetMatcher.find()).isTrue();
+    String targetAlias = targetMatcher.group(1);
+
+    Matcher sourceMatcher =
+        Pattern.compile("USING `temp_table` AS `(__source_[a-f0-9]{32})`").matcher(query);
+    assertThat(sourceMatcher.find()).isTrue();
+    String sourceAlias = sourceMatcher.group(1);
+
+    assertThat(query)
+        .contains(
+            String.format(
+                "timestamp_trunc(`%s`.`id`, DAY) IN UNNEST(partitions_to_delete)", targetAlias));
+
+    assertThat(query)
+        .contains(
+            String.format(
+                "INSERT(`id`,`source`) VALUES(`%s`.`id`,`%s`.`source`)", sourceAlias, sourceAlias));
+  }
+
+  @Test
+  public void testMakeSerializable_withGrpcStatusRuntimeException() {
+    io.grpc.Status status = io.grpc.Status.INVALID_ARGUMENT.withDescription("Invalid rows");
+    io.grpc.StatusRuntimeException grpcException = new io.grpc.StatusRuntimeException(status);
+
+    Exception outer = new Exception("Outer message", grpcException);
+
+    Throwable result = BigQueryUtil.makeSerializable(outer);
+
+    assertThat(result).isNotNull();
+    assertThat(result).isInstanceOf(SerializableGrpcStatusException.class);
+
+    SerializableGrpcStatusException serializable = (SerializableGrpcStatusException) result;
+    assertThat(serializable.getStatusCode()).isEqualTo(io.grpc.Status.Code.INVALID_ARGUMENT);
+    assertThat(serializable.getStatusDescription()).isEqualTo("Invalid rows");
+  }
+
+  @Test
+  public void testMakeSerializable_noGrpcException() {
+    Exception e = new Exception("Simple error");
+    Throwable result = BigQueryUtil.makeSerializable(e);
+    assertThat(result).isEqualTo(e);
+  }
+
+  @Test
+  public void testMakeSerializable_null() {
+    assertThat(BigQueryUtil.makeSerializable(null)).isNull();
+  }
+
+  @Test
+  public void testMakeSerializable_directGrpcException() {
+    io.grpc.Status status = io.grpc.Status.INVALID_ARGUMENT.withDescription("Invalid rows");
+    io.grpc.StatusRuntimeException grpcException = new io.grpc.StatusRuntimeException(status);
+    Throwable result = BigQueryUtil.makeSerializable(grpcException);
+    assertThat(result).isInstanceOf(SerializableGrpcStatusException.class);
+    SerializableGrpcStatusException serializable = (SerializableGrpcStatusException) result;
+    assertThat(serializable.getStatusCode()).isEqualTo(io.grpc.Status.Code.INVALID_ARGUMENT);
+  }
+
+  @Test
+  public void testMakeSerializable_withStatusException() {
+    io.grpc.Status status = io.grpc.Status.INVALID_ARGUMENT.withDescription("Invalid rows");
+    io.grpc.StatusException grpcException = new io.grpc.StatusException(status);
+    Throwable result = BigQueryUtil.makeSerializable(grpcException);
+    assertThat(result).isInstanceOf(SerializableGrpcStatusException.class);
+    SerializableGrpcStatusException serializable = (SerializableGrpcStatusException) result;
+    assertThat(serializable.getStatusCode()).isEqualTo(io.grpc.Status.Code.INVALID_ARGUMENT);
+  }
+
+  @Test
+  public void testMakeSerializable_grpcExceptionWithCause() {
+    Exception rootCause = new Exception("Root cause");
+    io.grpc.Status status =
+        io.grpc.Status.INVALID_ARGUMENT.withDescription("Invalid rows").withCause(rootCause);
+    io.grpc.StatusRuntimeException grpcException = new io.grpc.StatusRuntimeException(status);
+
+    Throwable result = BigQueryUtil.makeSerializable(grpcException);
+
+    assertThat(result).isInstanceOf(SerializableGrpcStatusException.class);
+    assertThat(result.getCause()).isNull();
+
+    SerializableGrpcStatusException serializable = (SerializableGrpcStatusException) result;
+    assertThat(serializable.getCauseMessage()).isEqualTo(rootCause.toString());
+  }
+
+  @Test
+  public void testMakeSerializable_withAppendSerializationError() {
+    String statusDescription = "Errors found while processing rows";
+    String writeStream = "projects/test/datasets/test/tables/test/streams/test";
+    Map<Integer, String> rowErrors = new LinkedHashMap<>();
+    rowErrors.put(2, "second row failed");
+    rowErrors.put(0, "first row failed");
+    AppendSerializationError appendSerializationError =
+        new AppendSerializationError(
+            io.grpc.Status.Code.INVALID_ARGUMENT.value(),
+            statusDescription,
+            writeStream,
+            rowErrors);
+    BigQueryConnectorException connectorException =
+        new BigQueryConnectorException(
+            "Execution Exception while retrieving AppendRowsResponse",
+            new ExecutionException(appendSerializationError));
+
+    Throwable result =
+        BigQueryUtil.verifySerialization(BigQueryUtil.makeSerializable(connectorException));
+
+    assertThat(result).isInstanceOf(SerializableGrpcStatusException.class);
+    assertThat(result.getCause()).isNull();
+    SerializableGrpcStatusException serializable = (SerializableGrpcStatusException) result;
+    assertThat(serializable.getStatusCode()).isEqualTo(io.grpc.Status.Code.INVALID_ARGUMENT);
+    assertThat(serializable.getStatusDescription()).isEqualTo(statusDescription);
+    assertThat(serializable.getMessage()).contains("write stream: " + writeStream);
+    assertThat(serializable.getMessage())
+        .endsWith("row errors (append request indexes): {0=first row failed, 2=second row failed}");
+    assertThat(serializable.toString()).contains("first row failed");
+  }
+
+  @Test
+  public void testMakeSerializable_withMoreThanMaximumRowErrors() {
+    List<Integer> rowIndexes = IntStream.range(0, 102).boxed().collect(Collectors.toList());
+    Collections.shuffle(rowIndexes, new Random(1501L));
+    Map<Integer, String> rowErrors = new LinkedHashMap<>();
+    rowIndexes.forEach(index -> rowErrors.put(index, "row error " + index));
+    AppendSerializationError appendSerializationError =
+        new AppendSerializationError(
+            io.grpc.Status.Code.INVALID_ARGUMENT.value(),
+            "Errors found while processing rows",
+            "projects/test/datasets/test/tables/test/streams/test",
+            rowErrors);
+
+    Throwable result =
+        BigQueryUtil.verifySerialization(BigQueryUtil.makeSerializable(appendSerializationError));
+
+    String expectedRowErrors =
+        IntStream.range(0, 100)
+            .mapToObj(index -> index + "=row error " + index)
+            .collect(Collectors.joining(", ", "{", "}"));
+    assertThat(result.getMessage())
+        .endsWith(
+            "row errors (append request indexes): "
+                + expectedRowErrors
+                + " [2 additional row errors omitted]");
+    assertThat(result.getMessage()).doesNotContain("100=row error 100");
+    assertThat(result.getMessage()).doesNotContain("101=row error 101");
+  }
+
+  @Test
+  public void testMakeSerializable_withOversizedRowErrorMessage() throws IOException {
+    Map<Integer, String> rowErrors = new LinkedHashMap<>();
+    rowErrors.put(0, Strings.repeat("\uD83D\uDE80", 20 * 1024));
+    rowErrors.put(1, "second row failed");
+    AppendSerializationError appendSerializationError =
+        new AppendSerializationError(
+            io.grpc.Status.Code.INVALID_ARGUMENT.value(),
+            "Errors found while processing rows",
+            "projects/test/datasets/test/tables/test/streams/test",
+            rowErrors);
+
+    Throwable result =
+        BigQueryUtil.verifySerialization(BigQueryUtil.makeSerializable(appendSerializationError));
+
+    String rowErrorsPrefix = "row errors (append request indexes): ";
+    String message = result.getMessage();
+    String rowErrorsSection = message.substring(message.indexOf(rowErrorsPrefix));
+    int serializedPayloadSize = serializedStringPayloadSize(rowErrorsSection);
+    assertThat(serializedPayloadSize).isAtLeast(63 * 1024);
+    assertThat(serializedPayloadSize).isAtMost(64 * 1024);
+    assertThat(rowErrorsSection).startsWith(rowErrorsPrefix + "{0=");
+    assertThat(rowErrorsSection)
+        .endsWith("} [row error text truncated] [1 additional row error omitted]");
+    assertThat(rowErrorsSection).doesNotContain("1=second row failed");
+    assertThat(Character.isLowSurrogate(rowErrorsSection.charAt(rowErrorsSection.indexOf('}') - 1)))
+        .isTrue();
+  }
+
+  @Test
+  public void testMakeSerializable_withAppendSerializationErrorWithoutRowErrors() {
+    String statusDescription = "Errors found while processing rows";
+    List<Map<Integer, String>> noRowErrors =
+        Arrays.asList(null, Collections.<Integer, String>emptyMap());
+    for (Map<Integer, String> rowErrors : noRowErrors) {
+      AppendSerializationError appendSerializationError =
+          new AppendSerializationError(
+              io.grpc.Status.Code.INVALID_ARGUMENT.value(),
+              statusDescription,
+              "projects/test/datasets/test/tables/test/streams/test",
+              rowErrors);
+
+      Throwable result =
+          BigQueryUtil.verifySerialization(BigQueryUtil.makeSerializable(appendSerializationError));
+
+      assertThat(result).isInstanceOf(SerializableGrpcStatusException.class);
+      assertThat(result.getMessage())
+          .contains("write stream: " + appendSerializationError.getStreamName());
+      assertThat(result.getMessage()).endsWith("row errors (append request indexes): {}");
+    }
   }
 }

@@ -63,7 +63,8 @@ The latest version of the connector is publicly available in the following links
 
 | version    | Link                                                                                                                                                                                                                   |
 |------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Spark 4.1  | `gs://spark-lib/bigquery/spark-4.1-bigquery-${next-release-tag}-preview.jar`([HTTP link](https://storage.googleapis.com/spark-lib/bigquery/spark-4.1-bigquery-${next-release-tag}-preview.jar))                        |
+| Spark 4.2  | `gs://spark-lib/bigquery/spark-4.2-bigquery-${next-release-tag}.jar`([HTTP link](https://storage.googleapis.com/spark-lib/bigquery/spark-4.2-bigquery-${next-release-tag}.jar))                                        |
+| Spark 4.1  | `gs://spark-lib/bigquery/spark-4.1-bigquery-${next-release-tag}.jar`([HTTP link](https://storage.googleapis.com/spark-lib/bigquery/spark-4.1-bigquery-${next-release-tag}.jar))                        |
 | Spark 4.0  | `gs://spark-lib/bigquery/spark-4.0-bigquery-${next-release-tag}.jar`([HTTP link](https://storage.googleapis.com/spark-lib/bigquery/spark-4.0-bigquery-${next-release-tag}.jar))                                        |
 | Spark 3.5  | `gs://spark-lib/bigquery/spark-3.5-bigquery-${next-release-tag}.jar`([HTTP link](https://storage.googleapis.com/spark-lib/bigquery/spark-3.5-bigquery-${next-release-tag}.jar))                                        |
 | Spark 3.4  | `gs://spark-lib/bigquery/spark-3.4-bigquery-${next-release-tag}.jar`([HTTP link](https://storage.googleapis.com/spark-lib/bigquery/spark-3.4-bigquery-${next-release-tag}.jar))                                        |
@@ -75,37 +76,49 @@ The latest version of the connector is publicly available in the following links
 | Scala 2.12 | `gs://spark-lib/bigquery/spark-bigquery-with-dependencies_2.12-${next-release-tag}.jar` ([HTTP link](https://storage.googleapis.com/spark-lib/bigquery/spark-bigquery-with-dependencies_2.12-${next-release-tag}.jar)) |
 | Scala 2.11 | `gs://spark-lib/bigquery/spark-bigquery-with-dependencies_2.11-0.29.0.jar` ([HTTP link](https://storage.googleapis.com/spark-lib/bigquery/spark-bigquery-with-dependencies_2.11-0.29.0.jar))                           |
 
-The first six versions are Java based connectors targeting Spark 2.4/3.1/3.2/3.3/3.4/3.5 of all Scala versions built on the new
-Data Source APIs (Data Source API v2) of Spark.
-
-The final two connectors are Scala based connectors, please use the jar relevant to your Spark installation as outlined
-below.
+The Spark-specific connectors are Java-based Data Source V2 artifacts; use the
+artifact matching your Spark version. The Scala-specific connectors use Data
+Source V1; choose the artifact matching your Spark installation's Scala binary
+version as outlined below.
 
 ### Connector to Spark Compatibility Matrix
-| Connector \ Spark                     | 2.3     | 2.4     | 3.0     | 3.1     | 3.2     | 3.3     |3.4      | 3.5     |
-|---------------------------------------|---------|---------|---------|---------|---------|---------|---------|---------|
-| spark-3.5-bigquery                    |         |         |         |         |         |         |         | &check; |
-| spark-3.4-bigquery                    |         |         |         |         |         |         | &check; | &check; |
-| spark-3.3-bigquery                    |         |         |         |         |         | &check; | &check; | &check; |
-| spark-3.2-bigquery                    |         |         |         |         | &check; | &check; | &check; | &check; |
-| spark-3.1-bigquery                    |         |         |         | &check; | &check; | &check; | &check; | &check; |
-| spark-2.4-bigquery                    |         | &check; |         |         |         |         |         |         |
-| spark-bigquery-with-dependencies_2.13 |         |         |         |         | &check; | &check; | &check; | &check; |
-| spark-bigquery-with-dependencies_2.12 |         | &check; | &check; | &check; | &check; | &check; | &check; | &check; |
-| spark-bigquery-with-dependencies_2.11 | &check; | &check; |         |         |         |         |         |         |
+| Connector \ Spark                     | 2.3     | 2.4     | 3.0     | 3.1     | 3.2     | 3.3     | 3.4     | 3.5     | 4.0     | 4.1     | 4.2     |
+|---------------------------------------|---------|---------|---------|---------|---------|---------|---------|---------|---------|---------|---------|
+| spark-4.2-bigquery                    |         |         |         |         |         |         |         |         |         |         | &check; |
+| spark-4.1-bigquery                    |         |         |         |         |         |         |         |         |         | &check; |         |
+| spark-4.0-bigquery                    |         |         |         |         |         |         |         |         | &check; |         |         |
+| spark-3.5-bigquery                    |         |         |         |         |         |         |         | &check; |         |         |         |
+| spark-3.4-bigquery                    |         |         |         |         |         |         | &check; | &check; |         |         |         |
+| spark-3.3-bigquery                    |         |         |         |         |         | &check; | &check; | &check; |         |         |         |
+| spark-3.2-bigquery                    |         |         |         |         | &check; | &check; | &check; | &check; |         |         |         |
+| spark-3.1-bigquery                    |         |         |         | &check; | &check; | &check; | &check; | &check; |         |         |         |
+| spark-2.4-bigquery                    |         | &check; |         |         |         |         |         |         |         |         |         |
+| spark-bigquery-with-dependencies_2.13 |         |         |         |         | &check; | &check; | &check; | &check; |         |         |         |
+| spark-bigquery-with-dependencies_2.12 |         | &check; | &check; | &check; | &check; | &check; | &check; | &check; |         |         |         |
+| spark-bigquery-with-dependencies_2.11 | &check; | &check; |         |         |         |         |         |         |         |         |         |
 
 ### Connector to Dataproc Image Compatibility Matrix
-| Connector \ Dataproc Image            | 1.3     | 1.4     | 1.5     | 2.0     | 2.1     | 2.2     | Serverless<br>Image 1.0 | Serverless<br>Image 2.0 | Serverless<br>Image 2.1 | Serverless<br>Image 2.2 |
-|---------------------------------------|---------|---------|---------|---------|---------|---------|-------------------------|-------------------------|-------------------------|-------------------------|
-| spark-3.5-bigquery                    |         |         |         |         |         | &check; |                         |                         |                         | &check;                 |
-| spark-3.4-bigquery                    |         |         |         |         |         | &check; |                         |                         | &check;                 | &check;                 |
-| spark-3.3-bigquery                    |         |         |         |         | &check; | &check; | &check;                 | &check;                 | &check;                 | &check;                 |
-| spark-3.2-bigquery                    |         |         |         |         | &check; | &check; | &check;                 | &check;                 | &check;                 | &check;                 |
-| spark-3.1-bigquery                    |         |         |         | &check; | &check; | &check; | &check;                 | &check;                 | &check;                 | &check;                 |
-| spark-2.4-bigquery                    |         | &check; | &check; |         |         |         |                         |                         |                         |                         |
-| spark-bigquery-with-dependencies_2.13 |         |         |         |         |         |         |                         | &check;                 | &check;                 | &check;                 |
-| spark-bigquery-with-dependencies_2.12 |         |         | &check; | &check; | &check; | &check; | &check;                 |                         |                         |                         |
-| spark-bigquery-with-dependencies_2.11 | &check; | &check; |         |         |         |         |                         |                         |                         |                         |
+| Connector \ Dataproc Image            | 1.3     | 1.4     | 1.5     | 2.0     | 2.1     | 2.2     | 3.0     | Serverless<br>Runtime 1.0 | Serverless<br>Runtime 2.0 | Serverless<br>Runtime 2.1 | Serverless<br>Runtime 2.2 | Serverless<br>Runtime 3.0 |
+|---------------------------------------|---------|---------|---------|---------|---------|---------|---------|-------------------------|-------------------------|-------------------------|-------------------------|-------------------------|
+| spark-4.2-bigquery                    |         |         |         |         |         |         |         |                         |                         |                         |                         |                         |
+| spark-4.1-bigquery                    |         |         |         |         |         |         | &check; |                         |                         |                         |                         |                         |
+| spark-4.0-bigquery                    |         |         |         |         |         |         |         |                         |                         |                         |                         | &check;                 |
+| spark-3.5-bigquery                    |         |         |         |         |         | &check; |         |                         |                         |                         | &check;                 |                         |
+| spark-3.4-bigquery                    |         |         |         |         |         | &check; |         |                         |                         | &check;                 | &check;                 |                         |
+| spark-3.3-bigquery                    |         |         |         |         | &check; | &check; |         | &check;                 | &check;                 | &check;                 | &check;                 |                         |
+| spark-3.2-bigquery                    |         |         |         |         | &check; | &check; |         | &check;                 | &check;                 | &check;                 | &check;                 |                         |
+| spark-3.1-bigquery                    |         |         |         | &check; | &check; | &check; |         | &check;                 | &check;                 | &check;                 | &check;                 |                         |
+| spark-2.4-bigquery                    |         | &check; | &check; |         |         |         |         |                         |                         |                         |                         |                         |
+| spark-bigquery-with-dependencies_2.13 |         |         |         |         |         |         |         |                         | &check;                 | &check;                 | &check;                 |                         |
+| spark-bigquery-with-dependencies_2.12 |         |         | &check; | &check; | &check; | &check; |         | &check;                 |                         |                         |                         |                         |
+| spark-bigquery-with-dependencies_2.11 | &check; | &check; |         |         |         |         |         |                         |                         |                         |                         |                         |
+
+These matrices describe connector compatibility, not whether an image or
+runtime is currently supported. See the current
+[cluster image versions](https://docs.cloud.google.com/managed-spark/docs/concepts/versioning/image-version-lists)
+and
+[serverless runtime versions](https://docs.cloud.google.com/managed-spark/docs/concepts/versions/serverless-versions)
+for lifecycle status.
 
 ### Maven / Ivy Package Usage
 The connector is also available from the
@@ -115,7 +128,8 @@ repository. It can be used using the `--packages` option or the
 
 | version    | Connector Artifact                                                                 |
 |------------|------------------------------------------------------------------------------------|
-| Spark 4.1  | `com.google.cloud.spark:spark-4.1-bigquery:${next-release-tag}-preview`            |
+| Spark 4.2  | `com.google.cloud.spark:spark-4.2-bigquery:${next-release-tag}`                    |
+| Spark 4.1  | `com.google.cloud.spark:spark-4.1-bigquery:${next-release-tag}`            |
 | Spark 4.0  | `com.google.cloud.spark:spark-4.0-bigquery:${next-release-tag}`                    |
 | Spark 3.5  | `com.google.cloud.spark:spark-3.5-bigquery:${next-release-tag}`                    |
 | Spark 3.4  | `com.google.cloud.spark:spark-3.4-bigquery:${next-release-tag}`                    |
@@ -377,6 +391,18 @@ df.writeStream \
 
 **Important:** The connector does not configure the GCS connector, in order to avoid conflict with another GCS connector, if exists. In order to use the write capabilities of the connector, please configure the GCS connector on your cluster as explained [here](https://github.com/GoogleCloudPlatform/bigdata-interop/tree/master/gcs).
 
+**Note for Spark 4.2:** Spark 4.2 upgrades Apache Hadoop to 3.5.0, whose default configuration (`core-default.xml` and `mapred-default.xml`) sets `fs.gs.impl` to Hadoop's built-in `org.apache.hadoop.fs.gs.GoogleHadoopFileSystem`, uses byte-unit suffixes (such as `64m`) for `fs.gs.*` size properties that are incompatible with the [Cloud Storage connector (`gcs-connector`)](https://github.com/GoogleCloudPlatform/bigdata-interop/tree/master/gcs), and defaults `mapreduce.outputcommitter.factory.scheme.gs` to `ManifestCommitterFactory` (which fails with a `NullPointerException` in Spark 4.2 when writing Avro or ORC intermediate files). When running indirect writes on a self-managed Spark 4.2 cluster with `gcs-connector`, set the following Hadoop configurations (for example via `spark.hadoop.*` properties or in `core-site.xml` / `mapred-site.xml`):
+
+```properties
+spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem
+spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS
+spark.hadoop.fs.gs.block.size=67108864
+spark.hadoop.fs.gs.outputstream.buffer.size=8388608
+spark.hadoop.fs.gs.inputstream.inplace.seek.limit=8388608
+spark.hadoop.fs.gs.inputstream.min.range.request.size=2097152
+spark.hadoop.mapreduce.outputcommitter.factory.scheme.gs=org.apache.hadoop.mapreduce.lib.output.FileOutputCommitterFactory
+```
+
 #### Schema Behavior on Overwrite
 
 When using `SaveMode.Overwrite` (`.mode("overwrite")`), the connector **preserves the existing table's schema**.
@@ -401,6 +427,27 @@ Programmatic Relaxation: Set `.option("allowFieldRelaxation", "true")` for nulla
 This behavior was introduced between version 0.22.0 and 0.41.0 to prevent accidental schema drift.
 
 **Note:** This behavior applies to both the `indirect` (default) and `direct` write methods.
+
+#### Change Data Capture (CDC) write
+
+The connector supports writing data to BigQuery tables using Change Data Capture (CDC). CDC allows applying row-level updates (`UPSERT`) and deletes (`DELETE`) directly from a Spark DataFrame based on the `_CHANGE_TYPE` and `_CHANGE_SEQUENCE_NUMBER` pseudo-columns (case-insensitive). CDC writes require using the direct write method with `writeAtLeastOnce` enabled, target table pre-existence with a primary key, and `SaveMode.Append` (`.mode("append")`). Partition decorators are not supported alongside CDC writes.
+
+```python
+# Create a DataFrame containing CDC columns
+data = [
+    (1, "Alice", "UPSERT", 1),
+    (2, "Bob", "DELETE", 2)
+]
+df = spark.createDataFrame(data, ["id", "name", "_CHANGE_TYPE", "_CHANGE_SEQUENCE_NUMBER"])
+
+# Write to BigQuery using direct write method with writeAtLeastOnce enabled
+df.write \
+  .format("bigquery") \
+  .mode("append") \
+  .option("writeMethod", "direct") \
+  .option("writeAtLeastOnce", "true") \
+  .save("dataset.table")
+```
 
 ### Running SQL on BigQuery
 
@@ -462,17 +509,9 @@ word-break:break-word
    <td>Read/Write</td>
   </tr>
   <tr valign="top">
-   <td><code>billingProject</code>
-   </td>
-   <td>The Google Cloud Project ID to use for <strong>billing</strong> (API calls, query execution).
-       <br/>(Optional. Defaults to the project of the Service Account being used)
-   </td>
-   <td>Read/Write</td>
-  </tr>
-  <tr valign="top">
    <td><code>parentProject</code>
    </td>
-   <td><strong>(Deprecated)</strong> Alias for <code>billingProject</code>.
+   <td>The Google Cloud Project ID to use for billing (API calls and query execution).
        <br/>(Optional. Defaults to the project of the Service Account being used)
    </td>
    <td>Read/Write</td>
@@ -962,6 +1001,14 @@ word-break:break-word
      <td>Read</td>
    </tr>
   <tr>
+    <td><code>enableArrowTimestampRebase</code>
+    </td>
+    <td>Boolean config to enable Julian-to-Gregorian rebasing for Arrow timestamps. Set to <code>false</code> to avoid a 2-day shift for pre-Gregorian dates.
+        <br/>(Optional. Default value is <code>true</code>)
+    </td>
+    <td>Read</td>
+  </tr>
+  <tr>
      <td><code>bigQueryJobTimeoutInMinutes</code>
      </td>
      <td>Config to set the BigQuery job timeout in minutes.
@@ -1429,6 +1476,15 @@ spark.conf.set("credentials", "<SERVICE_ACCOUNT_JSON_IN_BASE64>")
 // Per read/Write
 spark.read.format("bigquery").option("credentials", "<SERVICE_ACCOUNT_JSON_IN_BASE64>")
 ```
+* For Workload Identity Federation (WIF) or external account key files requiring dynamic token refresh across Spark executors, set `gcpAccessTokenProviderConfig` to the path of your credentials JSON file:
+```
+// Globally
+spark.conf.set("gcpAccessTokenProviderConfig", "</path/to/credentials.json>")
+// Per read/Write
+spark.read.format("bigquery").option("gcpAccessTokenProviderConfig", "</path/to/credentials.json>")
+```
+  When `gcpAccessTokenProviderConfig` is set, `gcpAccessTokenProvider` automatically defaults to `com.google.cloud.bigquery.connector.common.FileCredentialsAccessTokenProvider`. This ensures credentials are 100% serializable across Spark executors (preventing `NotSerializableException` in direct write mode) while dynamically refreshing OAuth tokens for jobs running longer than 1 hour.
+
 * In cases where the user has an internal service providing the Google AccessToken, a custom implementation
   can be done, creating only the AccessToken and providing its TTL. Token refresh will re-generate a new token. In order
   to use this, implement the
